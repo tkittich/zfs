@@ -160,7 +160,6 @@
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/errno.h>
-#include <sys/uio_impl.h>
 #include <sys/file.h>
 #include <sys/kmem.h>
 #include <sys/cmn_err.h>
@@ -2595,6 +2594,41 @@ zfs_prop_set_special(const char *dsname, zprop_source_t source,
 		}
 		break;
 	}
+	case ZFS_PROP_LONGNAME:
+	{
+		zfsvfs_t *zfsvfs;
+
+		/*
+		 * Ignore the checks if the property is being applied as part of
+		 * 'zfs receive'. Because, we already check if the local pool
+		 * has SPA_FEATURE_LONGNAME enabled in dmu_recv_begin_check().
+		 */
+		if (source == ZPROP_SRC_RECEIVED) {
+			cmn_err(CE_NOTE, "Skipping ZFS_PROP_LONGNAME checks "
+			    "for dsname=%s\n", dsname);
+			err = -1;
+			break;
+		}
+
+		if ((err = zfsvfs_hold(dsname, FTAG, &zfsvfs, B_FALSE)) != 0) {
+			cmn_err(CE_WARN, "%s:%d Failed to hold for dsname=%s "
+			    "err=%d\n", __FILE__, __LINE__, dsname, err);
+			break;
+		}
+
+		if (!spa_feature_is_enabled(zfsvfs->z_os->os_spa,
+		    SPA_FEATURE_LONGNAME)) {
+			err = ENOTSUP;
+		} else {
+			/*
+			 * Set err to -1 to force the zfs_set_prop_nvlist code
+			 * down the default path to set the value in the nvlist.
+			 */
+			err = -1;
+		}
+		zfsvfs_rele(zfsvfs, FTAG);
+		break;
+	}
 	default:
 		err = -1;
 	}
@@ -3050,7 +3084,6 @@ static const zfs_ioc_key_t zfs_keys_get_props[] = {
 static int
 zfs_ioc_pool_get_props(const char *pool, nvlist_t *innvl, nvlist_t *outnvl)
 {
-	nvlist_t *nvp = outnvl;
 	spa_t *spa;
 	char **props = NULL;
 	unsigned int n_props = 0;
@@ -3069,16 +3102,17 @@ zfs_ioc_pool_get_props(const char *pool, nvlist_t *innvl, nvlist_t *outnvl)
 		 */
 		mutex_enter(&spa_namespace_lock);
 		if ((spa = spa_lookup(pool)) != NULL) {
-			error = spa_prop_get(spa, &nvp);
+			error = spa_prop_get(spa, outnvl);
 			if (error == 0 && props != NULL)
 				error = spa_prop_get_nvlist(spa, props, n_props,
-				    &nvp);
+				    outnvl);
 		}
 		mutex_exit(&spa_namespace_lock);
 	} else {
-		error = spa_prop_get(spa, &nvp);
+		error = spa_prop_get(spa, outnvl);
 		if (error == 0 && props != NULL)
-			error = spa_prop_get_nvlist(spa, props, n_props, &nvp);
+			error = spa_prop_get_nvlist(spa, props, n_props,
+			    outnvl);
 		spa_close(spa, FTAG);
 	}
 
